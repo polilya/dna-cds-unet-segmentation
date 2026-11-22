@@ -1,0 +1,10 @@
+torch>=2.5
+numpy
+pandas
+scikit-learn
+pyyaml
+matplotlib
+tensorboard
+optuna
+tqdm
+pytest
