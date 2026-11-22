@@ -55,6 +55,8 @@ def experiments():
 def summarise(runs_dir="runs"):
     rows = []
     for f in Path(runs_dir).glob("*/results.json"):
+        if not (f.parent / "config.json").exists():  # e.g. E0, which has its own script
+            continue
         cfg = json.loads((f.parent / "config.json").read_text())
         res = json.loads(f.read_text())
         name = f.parent.name

@@ -77,6 +77,7 @@ def main():
         if vd > best:
             best, state = vd, {k: v.detach().clone() for k, v in model.state_dict().items()}
     model.load_state_dict(state)
+    torch.save(state, out / "best.pt")
 
     pte = predict_windows(model, xte, dev, False)
     res = {"protocol": "2023", "n_params": n_params(model), "train_windows": len(xtr), "test_windows": len(xte),
