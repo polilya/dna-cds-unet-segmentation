@@ -75,6 +75,7 @@ def main():
     ap.add_argument("--groups", default="e2,e3,e4,e5")
     ap.add_argument("--seeds", default="0,1,2")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--reverse", action="store_true", help="walk the list from the end (for a second parallel worker)")
     args = ap.parse_args()
     groups = set(args.groups.split(","))
     seeds = [int(s) for s in args.seeds.split(",")]
@@ -90,8 +91,18 @@ def main():
         for name, s, over in todo:
             print(f"  {name}_s{s}  {over}")
         return
+    if args.reverse:
+        todo = todo[::-1]
     t0 = time.time()
     for i, (name, s, over) in enumerate(todo, 1):
+        run_dir = Path("runs") / f"{name}_s{s}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        try:  # claim the run so parallel workers never train the same configuration
+            (run_dir / "claimed").touch(exist_ok=False)
+        except FileExistsError:
+            continue
+        if (run_dir / "results.json").exists():
+            continue
         cfg = default_config()
         cfg.update(over)
         cfg.update({"name": f"{name}_s{s}", "seed": s})
