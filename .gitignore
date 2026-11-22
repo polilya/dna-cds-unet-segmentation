@@ -1,0 +1,9 @@
+# Large generated data and raw genome files (rebuild with notebooks/01_data_preparation.ipynb)
+data/*
+!data/cds.csv
+*.fasta
+*.fna
+*.gff
+logs/
+runs/
+.ipynb_checkpoints/
