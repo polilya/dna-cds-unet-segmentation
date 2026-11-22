@@ -3,7 +3,7 @@
     python -m cdsseg.train --name e1_unet2023 --model unet --steps 4000
     python -m cdsseg.train --name k15 --model unet --model-kwargs '{"kernel": 15}' --seed 1
 
-Writes runs/<name>/: config.json, log.csv (training curve), best.pt (best validation AUPRC),
+Writes runs/<name>/: config.json, log.csv (training curve), best.pt (best validation metric, --select auprc|mcc|f1),
 results.json (validation and test metrics).
 """
 import argparse
@@ -105,8 +105,8 @@ def run(cfg):
             print(f"step {step:6d}  {time.time() - t0:6.0f}s  train {np.mean(running):.4f}  val {vl:.4f}  "
                   f"AUPRC {m['auprc']:.3f}  F1 {m['f1']:.3f}  MCC {m['mcc']:.3f}", flush=True)
             running = []
-            if m["auprc"] > best:
-                best, best_step, bad = m["auprc"], step, 0
+            if m[cfg["select"]] > best:
+                best, best_step, bad = m[cfg["select"]], step, 0
                 torch.save(model.state_dict(), out / "best.pt")
             else:
                 bad += 1
@@ -131,7 +131,7 @@ def default_config():
     return {"name": "run", "runs": "runs", "data": "data/processed", "train": TRAIN, "val": VAL,
             "test": TEST, "model": "unet", "model_kwargs": {}, "loss": "bce", "loss_kwargs": {},
             "window": 1000, "batch_size": 128, "pos_fraction": 0.5, "lr": 2e-3, "weight_decay": 1e-4,
-            "steps": 4000, "eval_every": 250, "patience": 6, "val_windows": 4096, "seed": 0,
+            "steps": 4000, "eval_every": 250, "patience": 6, "select": "auprc", "val_windows": 4096, "seed": 0,
             "device": "mps" if torch.backends.mps.is_available() else "cpu", "amp": False}
 
 

@@ -38,12 +38,29 @@ def tversky(logits, target, alpha=0.3, beta=0.7, smooth=1.0):
     return 1 - ((tp + smooth) / (tp + alpha * fp + beta * fn + smooth)).mean()
 
 
+def mcc(logits, target, eps=1e-6):
+    """1 - soft Matthews correlation over the whole batch (Abhishek & Hamarneh 2021)."""
+    p = torch.sigmoid(logits)
+    tp = (p * target).sum()
+    tn = ((1 - p) * (1 - target)).sum()
+    fp = (p * (1 - target)).sum()
+    fn = ((1 - p) * target).sum()
+    num = tp * tn - fp * fn
+    den = torch.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn) + eps)
+    return 1 - num / den
+
+
+def bce_mcc(logits, target):
+    return bce(logits, target) + mcc(logits, target)
+
+
 def bce_dice(logits, target):
     return bce(logits, target) + dice_window(logits, target)
 
 
 LOSSES = {"bce": bce, "dice_batch": dice_batch, "dice_window": dice_window,
-          "focal": focal, "tversky": tversky, "bce_dice": bce_dice}
+          "focal": focal, "tversky": tversky, "bce_dice": bce_dice,
+          "mcc": mcc, "bce_mcc": bce_mcc}
 
 
 def get(name, **kwargs):
