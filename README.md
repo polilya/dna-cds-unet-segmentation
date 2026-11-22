@@ -2,7 +2,7 @@
 
 Deep-learning pipeline that finds protein-coding sequences (CDS) in raw human DNA. A 1D convolutional U-Net reads a 1,000-base window of one-hot encoded DNA and returns, for every base, the probability that it belongs to a CDS. The project also shows why the standard Dice metric fails on this task and tests modified Dice variants that fix it.
 
-Individual research project, Bauman Moscow State Technical University, 2023; notebooks revised in 2025. A paper draft is in preparation.
+Individual research project, Bauman Moscow State Technical University, 2023; notebooks revised in 2025. The paper draft is in [`paper/`](paper/draft_2023_cleaned.docx).
 
 <p align="center">
   <img src="figures/predictions_model4.png" width="720" alt="Predicted CDS masks on random test windows">
@@ -92,7 +92,8 @@ The best model reaches a Dice of 0.65 on balanced test data. It localises coding
 │   └── 02_unet_segmentation.ipynb  train and evaluate the 1D U-Net and Dice variants
 ├── models/                         trained Keras models from the results table (.h5)
 ├── data/cds.csv                    CDS coordinates extracted from the annotation
-└── figures/
+├── figures/
+└── paper/draft_2023_cleaned.docx   paper draft (2023, English)
 ```
 
 The segmentation notebook was run in Google Colab; when running it locally, skip the Google Drive cell and put the generated `data_masks_long.csv` in `data/`.
