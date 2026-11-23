@@ -8,3 +8,6 @@ logs/
 runs/
 .ipynb_checkpoints/
 runs/
+__pycache__/
+*.pyc
+.DS_Store
