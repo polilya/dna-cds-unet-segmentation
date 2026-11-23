@@ -33,7 +33,7 @@ class UNet1D(nn.Module):
     """
 
     def __init__(self, channels=(16, 32, 64), kernel=41, pool=5, convs_per_level=1,
-                 dropout=0.2, norm=False):
+                 dropout=0.2, norm=False, full_res_conv=False):
         super().__init__()
         self.pool = pool
         self.enc = nn.ModuleList()
@@ -45,6 +45,10 @@ class UNet1D(nn.Module):
         for c in reversed(channels):
             self.dec.append(conv_block(c_prev, c, kernel, convs_per_level, dropout, norm))
             c_prev = 2 * c  # after concatenation with the skip connection of the same width
+        # the 2023 decoder has no convolution at 1-bp resolution; full_res_conv adds one before the head
+        self.final = conv_block(c_prev, channels[0], kernel, 1, 0.0, norm) if full_res_conv else nn.Identity()
+        if full_res_conv:
+            c_prev = channels[0]
         self.head = nn.Conv1d(c_prev, 1, 1)
 
     def forward(self, codes):
@@ -62,7 +66,7 @@ class UNet1D(nn.Module):
         for block, skip in zip(self.dec, reversed(skips)):
             x = F.interpolate(block(x), scale_factor=self.pool, mode="nearest")
             x = torch.cat([x, skip], dim=1)
-        return self.head(x)[:, 0, :L]
+        return self.head(self.final(x))[:, 0, :L]
 
 
 class PlainCNN(nn.Module):
@@ -118,7 +122,92 @@ class CNNBiLSTM(nn.Module):
         return self.head(x)[..., 0]
 
 
-MODELS = {"unet": UNet1D, "cnn": PlainCNN, "dilated": DilatedResNet, "bilstm": CNNBiLSTM}
+class ResBlock(nn.Module):
+    """Two convolutions with BatchNorm and an identity (or 1x1) shortcut."""
+
+    def __init__(self, c_in, c_out, kernel, dropout):
+        super().__init__()
+        self.body = nn.Sequential(
+            nn.Conv1d(c_in, c_out, kernel, padding="same"), nn.BatchNorm1d(c_out), nn.ReLU(inplace=True),
+            nn.Dropout(dropout) if dropout else nn.Identity(),
+            nn.Conv1d(c_out, c_out, kernel, padding="same"), nn.BatchNorm1d(c_out))
+        self.skip = nn.Identity() if c_in == c_out else nn.Conv1d(c_in, c_out, 1)
+
+    def forward(self, x):
+        return F.relu(self.body(x) + self.skip(x))
+
+
+class UNet2(nn.Module):
+    """1D U-Net with the weak points of the 2023 layout fixed.
+
+    - Standard decoder: upsample first (linear), concatenate the skip, then convolve, so the last
+      decoder block runs at 1-bp resolution (the 2023 decoder convolves before upsampling and has
+      no convolution at full resolution).
+    - residual=True: two-convolution residual blocks with BatchNorm (stable at this depth);
+      residual=False: one convolution + BatchNorm per block, as in the best 2023-layout model.
+    - strands=2: one output per strand (labels bit 0 = +strand, bit 1 = -strand); the CDS
+      probability is P(+ or -). strands=1 predicts the merged label.
+    The encoder pools `len(channels)` times; a bottleneck block of width channels[-1] runs at the
+    lowest resolution, so the receptive field matches the 2023 model for the same kernel and pool.
+    """
+
+    def __init__(self, channels=(32, 64, 128), kernel=41, pool=5, dropout=0.2, residual=True, strands=2, gate=False):
+        super().__init__()
+        self.pool, self.strands = pool, strands
+        # gate=True adds a window-level head on the bottleneck ("does this window contain any CDS?"). In eval mode
+        # with gate_threshold set, the decoder runs only on windows that pass; the others get "no CDS".
+        self.gate_head = nn.Linear(2 * channels[-1], 1) if gate else None
+        self.gate_threshold, self.last_gate, self.gate_counts = None, None, [0, 0]
+        block = (lambda a, b: ResBlock(a, b, kernel, dropout)) if residual else \
+            (lambda a, b: conv_block(a, b, kernel, 1, dropout, True))
+        self.enc = nn.ModuleList()
+        c_prev = 4
+        for c in channels:
+            self.enc.append(block(c_prev, c))
+            c_prev = c
+        self.bottleneck = block(c_prev, channels[-1])
+        self.dec = nn.ModuleList()
+        c_prev = channels[-1]
+        for c in reversed(channels):
+            self.dec.append(block(c_prev + c, c))
+            c_prev = c
+        self.head = nn.Conv1d(c_prev, strands, 1)
+
+    def forward(self, codes):
+        x = one_hot(codes)
+        L = x.shape[-1]
+        pad = (-L) % (self.pool ** len(self.enc))
+        if pad:
+            x = F.pad(x, (0, pad))
+        skips = []
+        for block in self.enc:
+            x = block(x)
+            skips.append(x)
+            x = F.max_pool1d(x, self.pool)
+        x = self.bottleneck(x)
+        keep = None
+        if self.gate_head is not None:
+            self.last_gate = self.gate_head(torch.cat([x.amax(-1), x.mean(-1)], dim=1))[:, 0]
+            if not self.training and self.gate_threshold is not None:
+                keep = torch.sigmoid(self.last_gate.float()) >= self.gate_threshold
+                self.gate_counts[0] += keep.numel()
+                self.gate_counts[1] += int(keep.sum())
+                if not keep.any():
+                    out = x.new_full((keep.numel(), self.strands, L), -20.0)
+                    return out[:, 0] if self.strands == 1 else out
+                x, skips = x[keep], [s[keep] for s in skips]
+        for block, skip in zip(self.dec, reversed(skips)):
+            x = F.interpolate(x, size=skip.shape[-1], mode="linear", align_corners=False)
+            x = block(torch.cat([x, skip], dim=1))
+        out = self.head(x)[..., :L]
+        if keep is not None:  # windows rejected by the gate get a confident "no CDS"
+            full = out.new_full((keep.numel(), *out.shape[1:]), -20.0)
+            full[keep] = out
+            out = full
+        return out[:, 0] if self.strands == 1 else out
+
+
+MODELS = {"unet": UNet1D, "unet2": UNet2, "cnn": PlainCNN, "dilated": DilatedResNet, "bilstm": CNNBiLSTM}
 
 
 def build(name, **kwargs):

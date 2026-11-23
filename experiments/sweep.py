@@ -8,6 +8,8 @@ so the sweep can be stopped and resumed. A summary table is written to runs/summ
 """
 import argparse
 import json
+import re
+import subprocess
 import time
 from pathlib import Path
 
@@ -49,7 +51,56 @@ def experiments():
                      ("bce_dice", {}), ("focal", {}), ("tversky", {}), ("bce", {"pos_weight": 5.0})):
         tag = loss + "".join(f"_{k}{v}" for k, v in kw.items())
         exps.append(("e5", f"e5_{tag}", {"loss": loss, "loss_kwargs": kw}))
+    # best settings from E3/E4 combined, selected by validation MCC; checks whether the gains add up
+    bs32 = {"batch_size": 32, "steps": WINDOWS_SEEN // 32, "eval_every": WINDOWS_SEEN // 32 // 16}
+    for name, ch, extra in (("best_ch32_bn", (32, 64, 128), {}),
+                            ("best_ch32_bn_bs32", (32, 64, 128), bs32),
+                            ("best_ch64_bn", (64, 128, 256), {})):
+        exps.append(("best", name, {"model_kwargs": {"channels": list(ch), "norm": True}, "select": "mcc", **extra}))
+    # follow-ups on the best recipe (wide + BatchNorm + batch 32): a 1-bp convolution before the head, and the
+    # 64-wide model, which crashed on MPS at batch 128
+    for name, kw in (("arch_fullres", {"channels": [32, 64, 128], "norm": True, "full_res_conv": True}),
+                     ("best_ch64_bn_bs32", {"channels": [64, 128, 256], "norm": True})):
+        exps.append(("arch", name, {"model_kwargs": kw, "select": "mcc", **bs32}))
+    # UNet2: the 2023 layout's weak points fixed one at a time on top of the best recipe; every run is
+    # tested with reverse-complement averaging and 250-bp edge cropping and also without (plain_* keys)
+    v2 = {"model": "unet2", "select": "mcc", "rc_average": True, "crop": 250, **bs32}
+    for name, kw in (("v2_decoder", {"residual": False, "strands": 1}),
+                     ("v2_residual", {"residual": True, "strands": 1}),
+                     ("v2_full", {"residual": True, "strands": 2})):
+        exps.append(("v2", name, {"model_kwargs": {"channels": [32, 64, 128], **kw}, **v2}))
+    # re-check on UNet2 (residual, 1 strand) the conclusions first drawn on the 2023 layout:
+    # v2b, 3 seeds: width; v2c, run with --seeds 0: learning rate, kernel, training length, amount of data
+    res = {"channels": [32, 64, 128], "residual": True, "strands": 1}
+    # 40-80-160 (8.7M params) matches the best 2023-layout model (64-wide, 7.7M); 64-wide UNet2 would be 22M
+    exps.append(("v2b", "v2_res_ch40", {"model_kwargs": {**res, "channels": [40, 80, 160]}, **v2}))
+    for lr in (1e-3, 4e-3):
+        exps.append(("v2c", f"v2_res_lr{lr}", {"model_kwargs": res, **v2, "lr": lr}))
+    for k in (11, 21):
+        exps.append(("v2c", f"v2_res_k{k}", {"model_kwargs": {**res, "kernel": k}, **v2}))
+    exps.append(("v2c", "v2_res_32k", {"model_kwargs": res, **v2, "steps": 2 * bs32["steps"]}))
+    for k in (1, 4):
+        exps.append(("v2c", f"v2_res_chroms{k}", {"model_kwargs": res, **v2, "train": TRAIN[:k]}))
+    # night of 2026-11-23: (1) two-head model = v2_residual + a window gate head (+257 params); its one-head twin
+    # trained separately is v2_residual itself; (2) smaller UNet2 models, one seed each
+    exps.append(("night", "v2_twohead", {"model_kwargs": {**res, "gate": True}, **v2}))
+    for name, ch, k in (("v2_res_w16", [16, 32, 64], 41), ("v2_res_w16_k21", [16, 32, 64], 21),
+                        ("v2_res_w8", [8, 16, 32], 41)):
+        exps.append(("night", name, {"model_kwargs": {**res, "channels": ch, "kernel": k}, **v2, "_seeds": [0]}))
     return exps
+
+
+MIN_BATTERY = 15  # percent; below this no new run is started (a run in progress is never interrupted)
+
+
+def battery_percent():
+    """Battery charge in percent on a Mac (pmset), or None where it cannot be read."""
+    try:
+        out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r"(\d+)%", out)
+        return int(m.group(1)) if m else None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def summarise(runs_dir="runs"):
@@ -83,7 +134,7 @@ def main():
     for group, name, over in experiments():
         if group not in groups:
             continue
-        for s in seeds:
+        for s in over.get("_seeds", seeds):  # an experiment may fix its own seeds
             if not (Path("runs") / f"{name}_s{s}" / "results.json").exists():
                 todo.append((name, s, over))
     print(f"{len(todo)} runs to do")
@@ -95,6 +146,10 @@ def main():
         todo = todo[::-1]
     t0 = time.time()
     for i, (name, s, over) in enumerate(todo, 1):
+        charge = battery_percent()
+        if charge is not None and charge < MIN_BATTERY:
+            print(f"battery at {charge}% (< {MIN_BATTERY}%): not starting {name}_s{s}, stopping", flush=True)
+            break
         run_dir = Path("runs") / f"{name}_s{s}"
         run_dir.mkdir(parents=True, exist_ok=True)
         try:  # claim the run so parallel workers never train the same configuration
@@ -104,7 +159,7 @@ def main():
         if (run_dir / "results.json").exists():
             continue
         cfg = default_config()
-        cfg.update(over)
+        cfg.update({k: v for k, v in over.items() if not k.startswith("_")})
         cfg.update({"name": f"{name}_s{s}", "seed": s})
         print(f"\n=== [{i}/{len(todo)}] {cfg['name']}  ({(time.time() - t0) / 3600:.1f} h elapsed)", flush=True)
         try:

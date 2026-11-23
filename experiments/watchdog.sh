@@ -3,7 +3,9 @@
 # Failed runs (claimed but without results.json) are retried up to MAX_RETRIES times.
 # Every action is logged to runs/watchdog.log; the script exits when no runs are left.
 #
-#   sh experiments/watchdog.sh
+#   sh experiments/watchdog.sh                  # E2-E5
+#   sh experiments/watchdog.sh --groups best    # arguments are passed to sweep.py
+SWEEP_ARGS="$*"
 cd "$(dirname "$0")/.." || exit 1
 export PYTHONPATH=.
 LOG=runs/sweep_log.txt
@@ -17,6 +19,7 @@ running() { pgrep -f "experiments/sweep.py" >/dev/null; }
 release_stale_claims() {
     for d in runs/*/; do
         [ -f "$d/claimed" ] && [ ! -f "$d/results.json" ] || continue
+        [ -f "$d/deferred" ] || [ -f "$d/paused_by_battery" ] && continue  # held back on purpose, not failed
         n=$(cat "$d/retries" 2>/dev/null || echo 0)
         if [ "$n" -lt "$MAX_RETRIES" ]; then
             echo $((n + 1)) > "$d/retries"
@@ -28,7 +31,7 @@ release_stale_claims() {
 
 start() {
     release_stale_claims
-    left=$(python experiments/sweep.py --dry-run 2>/dev/null | awk '/runs to do/{print $1}')
+    left=$(python experiments/sweep.py $SWEEP_ARGS --dry-run 2>/dev/null | awk '/runs to do/{print $1}')
     claimed_left=0
     for d in runs/*/; do [ -f "$d/claimed" ] && [ ! -f "$d/results.json" ] && claimed_left=$((claimed_left + 1)); done
     if [ "${left:-0}" -le "$claimed_left" ]; then
@@ -36,7 +39,7 @@ start() {
         exit 0
     fi
     say "starting sweep (${left} runs to do)"
-    nohup caffeinate -i python experiments/sweep.py >> "$LOG" 2>&1 &
+    nohup caffeinate -i python experiments/sweep.py $SWEEP_ARGS >> "$LOG" 2>&1 &
     sleep 30
 }
 

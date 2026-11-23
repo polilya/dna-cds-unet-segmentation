@@ -18,7 +18,7 @@ import torch
 from cdsseg import losses, metrics
 from cdsseg.data.dataset import Genome, RandomWindows
 from cdsseg.models import build, n_params
-from cdsseg.predict import chromosome_target, n_mask, scan_chromosome
+from cdsseg.predict import chromosome_target, n_mask, predict_batch, scan_chromosome
 
 TEST = ["chr20", "chr21"]
 VAL = ["chr22"]
@@ -32,21 +32,45 @@ def fixed_windows(genome, chroms, n, window, seed):
 
 
 @torch.no_grad()
-def predict_windows(model, seq, device, amp, batch_size=512):
+def predict_windows(model, seq, device, amp, batch_size=512, rc=False):
     model.eval()
     out = []
     for i in range(0, len(seq), batch_size):
         x = torch.from_numpy(seq[i:i + batch_size]).to(device)
-        with torch.autocast(device, dtype=torch.float16, enabled=amp):
-            out.append(torch.sigmoid(model(x).float()).cpu().numpy())
+        out.append(predict_batch(model, x, rc=rc, amp=amp))
     return np.concatenate(out)
 
 
-def evaluate_test(model, genome, chroms, thr, window, device, amp):
+def targets_for(model, lab):
+    """Training targets: merged CDS mask (B, L), or one channel per strand (B, 2, L) for 2-output models."""
+    if getattr(model, "strands", 1) == 2:
+        return np.stack([lab & 1, (lab >> 1) & 1], axis=1).astype(np.float32)
+    return (lab > 0).astype(np.float32)
+
+
+@torch.no_grad()
+def choose_gate(model, vseq, vtarget, device, recall, batch_size=512):
+    """Pick the gate threshold on validation windows: the highest one that keeps `recall` of CDS-containing windows."""
+    model.eval()
+    model.gate_threshold = None
+    g = []
+    for i in range(0, len(vseq), batch_size):
+        model(torch.from_numpy(vseq[i:i + batch_size]).to(device))
+        g.append(torch.sigmoid(model.last_gate.float()).cpu().numpy())
+    g, pos = np.concatenate(g), vtarget.any(1)
+    thr = float(np.quantile(g[pos], 1 - recall))
+    model.gate_threshold, model.gate_counts = thr, [0, 0]
+    auroc = metrics.base_metrics(g, pos)["auroc"]
+    return {"gate_threshold": thr, "val_gate_auroc": auroc, "val_gate_kept_fraction": float((g >= thr).mean()),
+            "val_gate_recall": float((g[pos] >= thr).mean())}
+
+
+def evaluate_test(model, genome, chroms, thr, window, device, amp, rc=False, crop=0):
     probs, targets = [], []
     for c in chroms:
         keep = ~n_mask(genome, c)
-        p = scan_chromosome(model, genome, c, window=window, stride=window // 2, device=device, amp=amp)
+        p = scan_chromosome(model, genome, c, window=window, stride=window // 2, device=device, amp=amp,
+                            rc=rc, crop=crop)
         probs.append(p[keep])
         targets.append(chromosome_target(genome, c)[keep])
     prob, target = np.concatenate(probs), np.concatenate(targets)
@@ -86,17 +110,20 @@ def run(cfg):
         model.train()
         s, l = next(sampler)
         x = torch.from_numpy(s).to(dev)
-        y = torch.from_numpy(l > 0).float().to(dev)
+        y = torch.from_numpy(targets_for(model, l)).to(dev)
         with torch.autocast(dev, dtype=torch.float16, enabled=amp):
             logits = model(x)
         loss = loss_fn(logits.float(), y)
+        if getattr(model, "gate_head", None) is not None:  # window head: does the window contain any CDS?
+            wl = torch.from_numpy((l > 0).any(1)).float().to(dev)
+            loss = loss + cfg.get("gate_weight", 1.0) * losses.bce(model.last_gate.float(), wl)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
         sched.step()
         running.append(loss.item())
         if step % cfg["eval_every"] == 0 or step == cfg["steps"]:
-            vp = predict_windows(model, vseq, dev, amp)
+            vp = predict_windows(model, vseq, dev, amp, rc=cfg.get("rc_average", False))
             vl = float(loss_fn(torch.logit(torch.from_numpy(vp).clamp(1e-6, 1 - 1e-6)),
                                torch.from_numpy(vtarget).float()))
             m = metrics.base_metrics(vp, vtarget)
@@ -116,12 +143,33 @@ def run(cfg):
     log.close()
 
     model.load_state_dict(torch.load(out / "best.pt", map_location=dev))
-    vp = predict_windows(model, vseq, dev, amp)
+    rc, crop = cfg.get("rc_average", False), cfg.get("crop", 0)
+    res = {"best_step": best_step, "train_seconds": round(time.time() - t0, 1)}
+    gated = getattr(model, "gate_head", None) is not None
+    if gated:
+        res.update(choose_gate(model, vseq, vtarget, dev, cfg.get("gate_recall", 0.99)))
+    vp = predict_windows(model, vseq, dev, amp, rc=rc)
     thr = metrics.best_threshold(vp, vtarget)
-    res = {"best_step": best_step, "train_seconds": round(time.time() - t0, 1), "threshold": thr,
-           **{f"val_{k}": v for k, v in metrics.base_metrics(vp, vtarget, thr).items()}}
+    res.update({"threshold": thr, **{f"val_{k}": v for k, v in metrics.base_metrics(vp, vtarget, thr).items()}})
     if cfg["test"]:
-        res.update(evaluate_test(model, genome, cfg["test"], thr, cfg["window"], dev, amp))
+        t1 = time.time()
+        res.update(evaluate_test(model, genome, cfg["test"], thr, cfg["window"], dev, amp, rc=rc, crop=crop))
+        res["test_seconds"] = round(time.time() - t1, 1)
+        if gated:  # gate statistics on the test scan, then the same checkpoint with the gate switched off
+            seen, kept = model.gate_counts
+            res["test_gate_kept_fraction"] = kept / max(seen, 1)
+            model.gate_threshold = None
+            vpn = predict_windows(model, vseq, dev, amp, rc=rc)
+            thrn = metrics.best_threshold(vpn, vtarget)
+            t1 = time.time()
+            nog = evaluate_test(model, genome, cfg["test"], thrn, cfg["window"], dev, amp, rc=rc, crop=crop)
+            res.update({"nogate_threshold": thrn, "nogate_test_seconds": round(time.time() - t1, 1),
+                        **{f"nogate_{k}": v for k, v in nog.items()}})
+        if rc or crop:  # the same checkpoint without the inference-time tricks, to measure what they add
+            vp0 = predict_windows(model, vseq, dev, amp)
+            thr0 = metrics.best_threshold(vp0, vtarget)
+            plain = evaluate_test(model, genome, cfg["test"], thr0, cfg["window"], dev, amp)
+            res.update({"plain_threshold": thr0, **{f"plain_{k}": v for k, v in plain.items()}})
     (out / "results.json").write_text(json.dumps(res, indent=2))
     print(json.dumps({k: (round(v, 4) if isinstance(v, float) else v) for k, v in res.items()}, indent=1))
     return res
@@ -132,6 +180,7 @@ def default_config():
             "test": TEST, "model": "unet", "model_kwargs": {}, "loss": "bce", "loss_kwargs": {},
             "window": 1000, "batch_size": 128, "pos_fraction": 0.5, "lr": 2e-3, "weight_decay": 1e-4,
             "steps": 4000, "eval_every": 250, "patience": 6, "select": "auprc", "val_windows": 4096, "seed": 0,
+            "rc_average": False, "crop": 0, "gate_weight": 1.0, "gate_recall": 0.99,
             "device": "mps" if torch.backends.mps.is_available() else "cpu", "amp": False}
 
 
