@@ -108,6 +108,17 @@ def experiments():
             ("base_big", "base_dilated_5.6M", "dilated", {"channels": 146, "kernel": 11, "dilations": spliceai})):
         exps.append((group, name, {"model": model, "model_kwargs": kw, **base, "_seeds": [0],
                                     **({"infer_batch": 128} if model == "bilstm" else {})}))
+    # night of 2026-11-24, checks of the E8 result (dilated 1.5M: test MCC 0.765 vs 0.670 for UNet2 k11, but segment
+    # F1 0.14 vs 0.33): equal compute (24 wide, ~150M multiply-adds per window like UNet2 k11, 0.15M params), seeds
+    # 1-2 of both 1.5M models, and a hybrid = UNet2 k11 + 4 dilated blocks at 1-bp resolution (1.63M, ~240M MACs)
+    k11 = {"model_kwargs": {**res, "kernel": 11}, **v2}
+    exps.append(("night2", "base_dilated_w24", {"model": "dilated", "model_kwargs": {"channels": 24, "kernel": 11,
+                                                "dilations": spliceai}, **base, "_seeds": [0]}))
+    exps.append(("night2", "v2_res_k11", {**k11, "_seeds": [1, 2]}))
+    exps.append(("night2", "v2_hybrid_k11", {"model_kwargs": {**res, "kernel": 11, "refine_dilations": [1, 4, 10, 25]},
+                                             **v2, "_seeds": [0]}))
+    exps.append(("night2", "base_dilated_1.5M", {"model": "dilated", "model_kwargs": {"channels": 76, "kernel": 11,
+                                                 "dilations": spliceai}, **base, "_seeds": [1, 2]}))
     return exps
 
 

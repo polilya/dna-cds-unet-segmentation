@@ -85,19 +85,22 @@ class PlainCNN(nn.Module):
         return self.head(self.body(one_hot(codes)))[:, 0]
 
 
+def dilated_block(channels, kernel, dilation, norm=True):
+    """SpliceAI residual unit (pre-activation): BN-ReLU-conv twice; the caller adds the input back."""
+    return nn.Sequential(
+        nn.BatchNorm1d(channels) if norm else nn.Identity(), nn.ReLU(),
+        nn.Conv1d(channels, channels, kernel, dilation=dilation, padding="same"),
+        nn.BatchNorm1d(channels) if norm else nn.Identity(), nn.ReLU(),
+        nn.Conv1d(channels, channels, kernel, dilation=dilation, padding="same"))
+
+
 class DilatedResNet(nn.Module):
     """SpliceAI-style residual blocks with growing dilation: wide receptive field, full resolution."""
 
     def __init__(self, channels=32, kernel=11, dilations=(1, 1, 2, 2, 4, 4, 8, 8), norm=True):
         super().__init__()
         self.stem = nn.Conv1d(4, channels, 1)
-        self.blocks = nn.ModuleList()
-        for d in dilations:
-            self.blocks.append(nn.Sequential(
-                nn.BatchNorm1d(channels) if norm else nn.Identity(), nn.ReLU(),
-                nn.Conv1d(channels, channels, kernel, dilation=d, padding="same"),
-                nn.BatchNorm1d(channels) if norm else nn.Identity(), nn.ReLU(),
-                nn.Conv1d(channels, channels, kernel, dilation=d, padding="same")))
+        self.blocks = nn.ModuleList(dilated_block(channels, kernel, d, norm) for d in dilations)
         self.head = nn.Conv1d(channels, 1, 1)
 
     def forward(self, codes):
@@ -145,6 +148,7 @@ class UNet2(nn.Module):
       no convolution at full resolution).
     - residual=True: two-convolution residual blocks with BatchNorm (stable at this depth);
       residual=False: one convolution + BatchNorm per block, as in the best 2023-layout model.
+    - refine_dilations: optional dilated residual blocks at full resolution before the head.
     - strands=2: one output per strand (labels bit 0 = +strand, bit 1 = -strand); the CDS
       probability is P(+ or -). strands=1 predicts the merged label.
     The encoder pools `len(channels)` times; a bottleneck block of width channels[-1] runs at the
@@ -152,7 +156,7 @@ class UNet2(nn.Module):
     """
 
     def __init__(self, channels=(32, 64, 128), kernel=41, pool=5, dropout=0.2, residual=True, strands=2, gate=False,
-                 gate_detach=False):
+                 gate_detach=False, refine_dilations=(), refine_kernel=11):
         super().__init__()
         self.pool, self.strands = pool, strands
         self.gate_detach = gate_detach  # train the gate on frozen features: its loss cannot change the segmenter
@@ -173,6 +177,8 @@ class UNet2(nn.Module):
         for c in reversed(channels):
             self.dec.append(block(c_prev + c, c))
             c_prev = c
+        # refine_dilations: SpliceAI-style dilated residual blocks at 1-bp resolution after the decoder (hybrid model)
+        self.refine = nn.ModuleList(dilated_block(c_prev, refine_kernel, d) for d in refine_dilations)
         self.head = nn.Conv1d(c_prev, strands, 1)
 
     def forward(self, codes):
@@ -202,6 +208,8 @@ class UNet2(nn.Module):
         for block, skip in zip(self.dec, reversed(skips)):
             x = F.interpolate(x, size=skip.shape[-1], mode="linear", align_corners=False)
             x = block(torch.cat([x, skip], dim=1))
+        for b in self.refine:
+            x = x + b(x)
         out = self.head(x)[..., :L]
         if keep is not None:  # windows rejected by the gate get a confident "no CDS"
             full = out.new_full((keep.numel(), *out.shape[1:]), -20.0)
