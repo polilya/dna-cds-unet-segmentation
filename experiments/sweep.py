@@ -87,6 +87,12 @@ def experiments():
     for name, ch, k in (("v2_res_w16", [16, 32, 64], 41), ("v2_res_w16_k21", [16, 32, 64], 21),
                         ("v2_res_w8", [8, 16, 32], 41)):
         exps.append(("night", name, {"model_kwargs": {**res, "channels": ch, "kernel": k}, **v2, "_seeds": [0]}))
+    # the joint gate loss (weight 1) cost the two-head model ~0.08 MCC: a lighter gate loss, and a gate trained on
+    # detached features (the segmenter then trains exactly like the one-head twin)
+    exps.append(("gate2", "v2_twohead_w0.1", {"model_kwargs": {**res, "gate": True}, **v2, "gate_weight": 0.1,
+                                               "_seeds": [0]}))
+    exps.append(("gate2", "v2_twohead_detach", {"model_kwargs": {**res, "gate": True, "gate_detach": True}, **v2,
+                                                 "_seeds": [0]}))
     return exps
 
 
@@ -127,6 +133,8 @@ def main():
     ap.add_argument("--seeds", default="0,1,2")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--reverse", action="store_true", help="walk the list from the end (for a second parallel worker)")
+    ap.add_argument("--take-deferred", action="store_true",
+                    help="also run runs held back with a `deferred` marker (claimed on purpose, not failed)")
     args = ap.parse_args()
     groups = set(args.groups.split(","))
     seeds = [int(s) for s in args.seeds.split(",")]
@@ -152,6 +160,9 @@ def main():
             break
         run_dir = Path("runs") / f"{name}_s{s}"
         run_dir.mkdir(parents=True, exist_ok=True)
+        if args.take_deferred and (run_dir / "deferred").exists():  # a run held back earlier: take it over now
+            (run_dir / "deferred").unlink()
+            (run_dir / "claimed").unlink(missing_ok=True)
         try:  # claim the run so parallel workers never train the same configuration
             (run_dir / "claimed").touch(exist_ok=False)
         except FileExistsError:

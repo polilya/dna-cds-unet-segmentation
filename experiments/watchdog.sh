@@ -10,7 +10,7 @@ cd "$(dirname "$0")/.." || exit 1
 export PYTHONPATH=.
 LOG=runs/sweep_log.txt
 WLOG=runs/watchdog.log
-STALL_MIN=20
+STALL_MIN=60  # a full test evaluation (gated, ungated, plain) writes nothing for ~30 min
 MAX_RETRIES=2
 say() { echo "$(date '+%Y-%m-%d %H:%M') $*" | tee -a "$WLOG"; }
 
@@ -31,9 +31,16 @@ release_stale_claims() {
 
 start() {
     release_stale_claims
-    left=$(python experiments/sweep.py $SWEEP_ARGS --dry-run 2>/dev/null | awk '/runs to do/{print $1}')
+    todo=$(python experiments/sweep.py $SWEEP_ARGS --dry-run 2>/dev/null)
+    left=$(echo "$todo" | awk '/runs to do/{print $1}')
+    # count only this group's runs that are claimed but unfinished (failed for good, or held back with
+    # `deferred` unless the sweep runs with --take-deferred)
     claimed_left=0
-    for d in runs/*/; do [ -f "$d/claimed" ] && [ ! -f "$d/results.json" ] && claimed_left=$((claimed_left + 1)); done
+    for r in $(echo "$todo" | awk 'NR > 1 {print $1}'); do
+        [ -f "runs/$r/claimed" ] || continue
+        case "$SWEEP_ARGS" in *--take-deferred*) [ -f "runs/$r/deferred" ] && continue ;; esac
+        claimed_left=$((claimed_left + 1))
+    done
     if [ "${left:-0}" -le "$claimed_left" ]; then
         say "DONE: no runs left (${claimed_left} gave up after retries)"
         exit 0

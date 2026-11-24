@@ -151,9 +151,11 @@ class UNet2(nn.Module):
     lowest resolution, so the receptive field matches the 2023 model for the same kernel and pool.
     """
 
-    def __init__(self, channels=(32, 64, 128), kernel=41, pool=5, dropout=0.2, residual=True, strands=2, gate=False):
+    def __init__(self, channels=(32, 64, 128), kernel=41, pool=5, dropout=0.2, residual=True, strands=2, gate=False,
+                 gate_detach=False):
         super().__init__()
         self.pool, self.strands = pool, strands
+        self.gate_detach = gate_detach  # train the gate on frozen features: its loss cannot change the segmenter
         # gate=True adds a window-level head on the bottleneck ("does this window contain any CDS?"). In eval mode
         # with gate_threshold set, the decoder runs only on windows that pass; the others get "no CDS".
         self.gate_head = nn.Linear(2 * channels[-1], 1) if gate else None
@@ -187,7 +189,8 @@ class UNet2(nn.Module):
         x = self.bottleneck(x)
         keep = None
         if self.gate_head is not None:
-            self.last_gate = self.gate_head(torch.cat([x.amax(-1), x.mean(-1)], dim=1))[:, 0]
+            g = x.detach() if self.gate_detach else x
+            self.last_gate = self.gate_head(torch.cat([g.amax(-1), g.mean(-1)], dim=1))[:, 0]
             if not self.training and self.gate_threshold is not None:
                 keep = torch.sigmoid(self.last_gate.float()) >= self.gate_threshold
                 self.gate_counts[0] += keep.numel()

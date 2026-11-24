@@ -68,6 +68,7 @@ def choose_gate(model, vseq, vtarget, device, recall, batch_size=512):
 def evaluate_test(model, genome, chroms, thr, window, device, amp, rc=False, crop=0):
     probs, targets = [], []
     for c in chroms:
+        print(f"  testing on {c}", flush=True)  # also keeps the log alive for the watchdog
         keep = ~n_mask(genome, c)
         p = scan_chromosome(model, genome, c, window=window, stride=window // 2, device=device, amp=amp,
                             rc=rc, crop=crop)
