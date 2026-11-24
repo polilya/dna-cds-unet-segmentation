@@ -14,6 +14,20 @@ STALL_MIN=60  # a full test evaluation (gated, ungated, plain) writes nothing fo
 MAX_RETRIES=2
 say() { echo "$(date '+%Y-%m-%d %H:%M') $*" | tee -a "$WLOG"; }
 
+# The sweep needs the project's environment (numpy 2); a shell without `conda activate` would run the base Python
+# and every run would fail at once. Put the env's bin first on PATH if the current python is not it.
+ENV_NAME=${CDSSEG_ENV:-cdsseg}
+if ! python -c "import numpy, torch; numpy.trapezoid" 2>/dev/null; then
+    env_bin="$(conda info --base 2>/dev/null)/envs/$ENV_NAME/bin"
+    if [ -x "$env_bin/python" ]; then
+        PATH="$env_bin:$PATH"; export PATH
+        say "using conda env $ENV_NAME ($env_bin/python)"
+    else
+        say "python here lacks numpy>=2/torch and no conda env $ENV_NAME was found: run 'conda activate $ENV_NAME' first"
+        exit 1
+    fi
+fi
+
 running() { pgrep -f "^python experiments/sweep.py" >/dev/null; }  # only the sweep itself, not shells that mention it
 
 release_stale_claims() {
