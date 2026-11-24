@@ -97,14 +97,16 @@ def experiments():
     # training budget, selection and inference (RC averaging, 250-bp crop). SpliceAI-style dilated ResNet: 12 residual
     # blocks of two kernel-11 convolutions, dilations 1/4/10 as in SpliceAI-2k, receptive field 1201 bp, no
     # down-sampling. Helixer-style CNN + BiLSTM: two kernel-9 convolutions, then a 2-layer bidirectional LSTM.
-    # Ordered by priority: the 1.5M pair (~2 h each), then the 5.6M pair (~4-5 h each; full resolution is costly).
+    # Group base: the 1.5M pair (~2 h each). Group base_big: the 5.6M pair (~4-5 h each; full resolution is costly),
+    # not scheduled for now.
     spliceai = [1] * 4 + [4] * 4 + [10] * 4
     base = {"select": "mcc", "rc_average": True, "crop": 250, **bs32}
-    for name, model, kw in (("base_dilated_1.5M", "dilated", {"channels": 76, "kernel": 11, "dilations": spliceai}),
-                            ("base_bilstm_1.5M", "bilstm", {"channels": 128, "kernel": 9, "hidden": 192}),
-                            ("base_bilstm_5.6M", "bilstm", {"channels": 256, "kernel": 9, "hidden": 364}),
-                            ("base_dilated_5.6M", "dilated", {"channels": 146, "kernel": 11, "dilations": spliceai})):
-        exps.append(("base", name, {"model": model, "model_kwargs": kw, **base, "_seeds": [0],
+    for group, name, model, kw in (
+            ("base", "base_dilated_1.5M", "dilated", {"channels": 76, "kernel": 11, "dilations": spliceai}),
+            ("base", "base_bilstm_1.5M", "bilstm", {"channels": 128, "kernel": 9, "hidden": 192}),
+            ("base_big", "base_bilstm_5.6M", "bilstm", {"channels": 256, "kernel": 9, "hidden": 364}),
+            ("base_big", "base_dilated_5.6M", "dilated", {"channels": 146, "kernel": 11, "dilations": spliceai})):
+        exps.append((group, name, {"model": model, "model_kwargs": kw, **base, "_seeds": [0],
                                     **({"infer_batch": 128} if model == "bilstm" else {})}))
     return exps
 
