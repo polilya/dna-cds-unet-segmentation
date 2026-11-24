@@ -7,7 +7,7 @@ The project has two versions:
 - **2026 (current):** the method rebuilt as a reproducible pipeline (`cdsseg/`), evaluated on whole held-out chromosomes with a metric that works under heavy class imbalance, and a redesigned network (UNet2). Test MCC went from **0.18** (2023 protocol) to **0.70–0.74**.
 - **2023 (original):** individual research project, Bauman Moscow State Technical University; notebooks and the paper draft are kept in [`notebooks/`](notebooks/) and [`paper/`](paper/draft_2023_cleaned.docx) and summarised [at the end](#the-2023-version).
 
-Work in progress: the remaining experiments, open questions and their status are tracked in [`docs/RESEARCH_STATUS.md`](docs/RESEARCH_STATUS.md).
+Full results with all tables: [`docs/RESULTS.md`](docs/RESULTS.md). Open questions and their status: [`docs/RESEARCH_STATUS.md`](docs/RESEARCH_STATUS.md).
 
 ## Main result
 
@@ -110,7 +110,7 @@ Each change was tested on its own, on top of the previous best, with 3 seeds:
 | Windows decoded | 64 % | 100 % |
 | Test scan time | 575 s vs 766 s (−25 %) | 766 s |
 
-The gate itself costs no accuracy and saves a quarter of the compute; training both heads jointly with equal loss weights hurt the shared encoder. Variants with a lighter gate loss and with a gate trained on detached features are running.
+The gate itself costs no accuracy and saves a quarter of the compute; training both heads jointly with equal loss weights hurt the shared encoder. With the gate loss weighted 0.1 the two-head model matches its twin (MCC 0.706, segment F1 0.310, 1 seed) while decoding only 60 % of windows (−29 % inference time). Scoring the same predictions on test sets from balanced to natural composition shows that the gate does not remove false positives (the windows it drops were already predicted empty) and that balanced test sets can reverse the ranking of models ([`docs/RESULTS.md`](docs/RESULTS.md#35-test-set-composition)).
 
 **Isolated fragments** (no flanking sequence; relevant to draft assemblies and metagenomic contigs; measured on the 2023-layout model, to be repeated for UNet2): fragments of 500–1000 bp lose little (MCC 0.53–0.56 vs 0.58 on whole chromosomes), 100–150 bp drop to 0.35–0.40; a model is best applied at the window length it was trained on ([`docs/fragment_length.png`](docs/fragment_length.png)).
 
