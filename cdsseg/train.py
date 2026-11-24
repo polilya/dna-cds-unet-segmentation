@@ -65,13 +65,13 @@ def choose_gate(model, vseq, vtarget, device, recall, batch_size=512):
             "val_gate_recall": float((g[pos] >= thr).mean())}
 
 
-def evaluate_test(model, genome, chroms, thr, window, device, amp, rc=False, crop=0):
+def evaluate_test(model, genome, chroms, thr, window, device, amp, rc=False, crop=0, batch_size=512):
     probs, targets = [], []
     for c in chroms:
         print(f"  testing on {c}", flush=True)  # also keeps the log alive for the watchdog
         keep = ~n_mask(genome, c)
         p = scan_chromosome(model, genome, c, window=window, stride=window // 2, device=device, amp=amp,
-                            rc=rc, crop=crop)
+                            rc=rc, crop=crop, batch_size=batch_size)
         probs.append(p[keep])
         targets.append(chromosome_target(genome, c)[keep])
     prob, target = np.concatenate(probs), np.concatenate(targets)
@@ -86,6 +86,7 @@ def run(cfg):
     torch.manual_seed(cfg["seed"])
     np.random.seed(cfg["seed"])
     dev, amp = cfg["device"], cfg["amp"]
+    ib = cfg.get("infer_batch", 512)
 
     genome = Genome(cfg["data"], cfg["train"] + cfg["val"] + cfg["test"])
     train_g = Genome(cfg["data"], cfg["train"])
@@ -124,7 +125,7 @@ def run(cfg):
         sched.step()
         running.append(loss.item())
         if step % cfg["eval_every"] == 0 or step == cfg["steps"]:
-            vp = predict_windows(model, vseq, dev, amp, rc=cfg.get("rc_average", False))
+            vp = predict_windows(model, vseq, dev, amp, rc=cfg.get("rc_average", False), batch_size=ib)
             vl = float(loss_fn(torch.logit(torch.from_numpy(vp).clamp(1e-6, 1 - 1e-6)),
                                torch.from_numpy(vtarget).float()))
             m = metrics.base_metrics(vp, vtarget)
@@ -148,28 +149,30 @@ def run(cfg):
     res = {"best_step": best_step, "train_seconds": round(time.time() - t0, 1)}
     gated = getattr(model, "gate_head", None) is not None
     if gated:
-        res.update(choose_gate(model, vseq, vtarget, dev, cfg.get("gate_recall", 0.99)))
-    vp = predict_windows(model, vseq, dev, amp, rc=rc)
+        res.update(choose_gate(model, vseq, vtarget, dev, cfg.get("gate_recall", 0.99), batch_size=ib))
+    vp = predict_windows(model, vseq, dev, amp, rc=rc, batch_size=ib)
     thr = metrics.best_threshold(vp, vtarget)
     res.update({"threshold": thr, **{f"val_{k}": v for k, v in metrics.base_metrics(vp, vtarget, thr).items()}})
     if cfg["test"]:
         t1 = time.time()
-        res.update(evaluate_test(model, genome, cfg["test"], thr, cfg["window"], dev, amp, rc=rc, crop=crop))
+        res.update(evaluate_test(model, genome, cfg["test"], thr, cfg["window"], dev, amp, rc=rc, crop=crop,
+                                 batch_size=ib))
         res["test_seconds"] = round(time.time() - t1, 1)
         if gated:  # gate statistics on the test scan, then the same checkpoint with the gate switched off
             seen, kept = model.gate_counts
             res["test_gate_kept_fraction"] = kept / max(seen, 1)
             model.gate_threshold = None
-            vpn = predict_windows(model, vseq, dev, amp, rc=rc)
+            vpn = predict_windows(model, vseq, dev, amp, rc=rc, batch_size=ib)
             thrn = metrics.best_threshold(vpn, vtarget)
             t1 = time.time()
-            nog = evaluate_test(model, genome, cfg["test"], thrn, cfg["window"], dev, amp, rc=rc, crop=crop)
+            nog = evaluate_test(model, genome, cfg["test"], thrn, cfg["window"], dev, amp, rc=rc, crop=crop,
+                                batch_size=ib)
             res.update({"nogate_threshold": thrn, "nogate_test_seconds": round(time.time() - t1, 1),
                         **{f"nogate_{k}": v for k, v in nog.items()}})
         if rc or crop:  # the same checkpoint without the inference-time tricks, to measure what they add
-            vp0 = predict_windows(model, vseq, dev, amp)
+            vp0 = predict_windows(model, vseq, dev, amp, batch_size=ib)
             thr0 = metrics.best_threshold(vp0, vtarget)
-            plain = evaluate_test(model, genome, cfg["test"], thr0, cfg["window"], dev, amp)
+            plain = evaluate_test(model, genome, cfg["test"], thr0, cfg["window"], dev, amp, batch_size=ib)
             res.update({"plain_threshold": thr0, **{f"plain_{k}": v for k, v in plain.items()}})
     (out / "results.json").write_text(json.dumps(res, indent=2))
     print(json.dumps({k: (round(v, 4) if isinstance(v, float) else v) for k, v in res.items()}, indent=1))
@@ -182,6 +185,7 @@ def default_config():
             "window": 1000, "batch_size": 128, "pos_fraction": 0.5, "lr": 2e-3, "weight_decay": 1e-4,
             "steps": 4000, "eval_every": 250, "patience": 6, "select": "auprc", "val_windows": 4096, "seed": 0,
             "rc_average": False, "crop": 0, "gate_weight": 1.0, "gate_recall": 0.99,
+            "infer_batch": 512,  # windows per inference batch; LSTMs need less to fit in memory
             "device": "mps" if torch.backends.mps.is_available() else "cpu", "amp": False}
 
 
