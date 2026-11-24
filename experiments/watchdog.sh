@@ -14,7 +14,7 @@ STALL_MIN=60  # a full test evaluation (gated, ungated, plain) writes nothing fo
 MAX_RETRIES=2
 say() { echo "$(date '+%Y-%m-%d %H:%M') $*" | tee -a "$WLOG"; }
 
-running() { pgrep -f "experiments/sweep.py" >/dev/null; }
+running() { pgrep -f "^python experiments/sweep.py" >/dev/null; }  # only the sweep itself, not shells that mention it
 
 release_stale_claims() {
     for d in runs/*/; do
@@ -59,7 +59,7 @@ while true; do
         age=$(( ( $(date +%s) - $(stat -f %m "$LOG") ) / 60 ))
         if [ "$age" -ge "$STALL_MIN" ]; then
             say "STALL: log unchanged for ${age} min, restarting"
-            pkill -f "experiments/sweep.py"
+            pkill -f "^python experiments/sweep.py"
             sleep 10
             start
         fi
