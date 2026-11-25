@@ -78,6 +78,16 @@ protocol it scores 0.425 ± 0.005. Two things drove the gap:
 **Results.**
 - **Dice as a metric.** An empty predictor scores per-window Dice **0.94** and beats every trained model. No
   variant from the draft changes that (`../docs/metric_study.png`). MCC gives it 0.
+- **Dice on the current models** (`experiments/dice_vs_mcc.py`; 16 predictors: trivial, 2023 model, four
+  networks ± HMM; reference ranking = base MCC on whole chromosomes; `../docs/dice_vs_mcc.png`):
+  - *On soft probabilities, as in 2023,* Dice rewards saturated outputs, not quality. Well-calibrated networks
+    score 0.05 at the natural ratio, the Dice-trained 2023 model 0.80 and the empty predictor 0.94 (9th of 16).
+    Kendall τ with the reference is about 0.5 for every variant and composition.
+  - *On 0/1 masks,* Dice ranks the good models better (τ 0.69–0.78 at the natural ratio). But it still places
+    the empty predictor above the 2023 honest-protocol model, and it compresses all current models into
+    0.94–0.97 while MCC spreads them over 0.67–0.78.
+  - *On CDS-containing windows only,* the empty predictor drops to last. But Dice there ignores false
+    positives in gene-free sequence and agrees with the reference ranking least (τ 0.43–0.51).
 - **Dice as a loss.** Dice and Tversky losses collapse to a constant output. BCE with model selection by MCC
   works best.
 - **Test-set composition.** It changes the ranking of models. The model that is best on balanced windows
