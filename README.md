@@ -151,7 +151,7 @@ The gate itself costs no accuracy and saves a quarter of the compute; training b
 
 **Isolated fragments** (no flanking sequence; relevant to draft assemblies and metagenomic contigs; measured on the 2023-layout model, to be repeated for UNet2): fragments of 500–1000 bp lose little (MCC 0.53–0.56 vs 0.58 on whole chromosomes), 100–150 bp drop to 0.35–0.40; a model is best applied at the window length it was trained on ([`docs/fragment_length.png`](docs/fragment_length.png)).
 
-**Boundaries.** The networks alone recover exact CDS boundaries (±10 bp) for about a third of segments at best, and short exons (< 70 bp) are often missed; HMM decoding raises this to about 60 % ([above](#baselines-and-hmm-decoding)).
+**Boundaries.** The networks alone reach segment F1 (both ends ±10 bp) of at most 0.37: many true segments are found (recall up to 0.60) but predictions are fragmented, and short exons (< 70 bp) are often missed. HMM decoding raises segment F1 to 0.56–0.62 ([above](#baselines-and-hmm-decoding)).
 
 ## Conclusions for the paper
 
@@ -163,7 +163,7 @@ A critical reading of what the 2023 draft and this rebuild show so far. Status o
 2. **Per-window Dice is not a valid metric for sparse 1D segmentation.** An empty predictor scores 0.94 and beats every trained model; none of the draft's Dice variants fix this. Known from medical image segmentation (Metrics Reloaded), not yet shown this concretely for genome annotation.
 3. **Test-set composition changes the ranking of models.** Precision, and so MCC, falls as empty windows are added; the model that is best on balanced test sets is second-worst on natural data. Balanced test sets, common in the 2023 draft and in the literature, can pick the wrong model.
 4. **Small networks trained from scratch do well on CDS:** MCC 0.66–0.79 at 0.15–5.6 M parameters, a laptop, and minutes to an hour of training. This sits awkwardly with SegmentNT's ablation, where a U-Net without pretraining reaches MCC 0.07 (averaged over 14 element types, so not directly comparable). A head-to-head run on the same labels and test chromosomes is the comparison that would make this a result.
-5. **A U-Net is not the best small architecture for this task.** A SpliceAI-style dilated ResNet beats UNet2 by ~0.12 MCC at equal parameters and at equal compute. Why is open: a plain full-resolution CNN was weak (0.60), and adding dilated blocks to UNet2 did not help, so it is the combination of dilation, residual blocks and full resolution, not resolution alone.
+5. **A U-Net is not the best small architecture for this task.** A SpliceAI-style dilated ResNet beats UNet2 by ~0.12 MCC at equal parameters and at equal compute. Why is open: adding dilated blocks at 1-bp resolution to the end of UNet2 did not help, so a full-resolution stage after the U-Net is not enough; whether it is the absence of downsampling, the depth of the residual stack or the dilation schedule has not been separated.
 6. **Structured decoding is the main lever for boundaries.** An HMM on top of any network raises segment F1 from 0.14–0.37 to 0.56–0.62 without retraining; after decoding, the dilated network leads on both base and segment metrics.
 
 **One-head vs two-head model** (the 2023 draft's central idea, kept as a line of work). The draft proposed a two-stage design: a classifier decides whether a window contains any CDS, and the segmenter runs only on windows that pass. It was rebuilt as one network with two heads, a window gate on the bottleneck and the segmentation decoder, against a one-head twin of the same size. Findings:
