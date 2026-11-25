@@ -19,7 +19,7 @@ All numbers are on the **test set: whole chromosomes 20 and 21** (104 Mbp of non
 
 | Stage | Parameters | Test MCC | AUPRC | Segment F1 ±10 bp | Seeds |
 |---|---|---|---|---|---|
-| 2023 model trained with the 2023 protocol (chr1, CDS 9–300 bp, 1 : 1 windows, Dice loss) | 0.49 M | 0.18 ± 0.12 | 0.08 | 0.00 | 3 |
+| 2023 model trained with the 2023 protocol (chr1, CDS 9–300 bp, 1 : 1 windows, Dice loss) | 0.49 M | 0.26 (seeds 0.274, 0.253; the third collapsed to MCC 0) | 0.11 | 0.00 | 3 |
 | 2023 model, honest protocol (19 chromosomes, BCE) | 0.49 M | 0.425 ± 0.005 | 0.397 | 0.023 | 3 |
 | v1 (2023 layout) 32-wide | 1.94 M | 0.479 ± 0.020 | 0.475 | 0.063 | 3 |
 | v1 32-wide + BatchNorm + batch 32 | 1.94 M | 0.568 ± 0.008 | 0.576 | 0.099 | 3 |
